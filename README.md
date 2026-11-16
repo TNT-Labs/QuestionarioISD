@@ -70,6 +70,14 @@ Limiti intrinseci, da comunicare con trasparenza:
 
 In alternativa al workflow, puoi scrivere URL e chiave direttamente in `site/config.js`.
 
+### 3. Evitare la sospensione (piano gratuito)
+Il piano gratuito di Supabase sospende il progetto dopo circa 7 giorni senza attività. Il workflow
+`.github/workflows/keepalive.yml` esegue ogni 2 giorni una chiamata innocua al database (usa le stesse variabili del deploy).
+- Si può avviare a mano da **Actions → Keep-alive Supabase → Run workflow**, utile per verificarlo subito.
+- GitHub disattiva i workflow pianificati dopo 60 giorni senza commit nel repository e lo segnala via email: in quel caso riattivalo dalla scheda Actions.
+- Se il workflow fallisce, il progetto potrebbe essere già in pausa: riattivalo con **Restore** dalla dashboard di Supabase.
+- Per un uso continuativo è preferibile il piano Pro, che non va in pausa e include i backup giornalieri.
+
 > Se usi un dominio personalizzato per Supabase (non `*.supabase.co`), aggiornane l'host nel meta `Content-Security-Policy` di `site/index.html` e `site/admin/index.html`.
 
 ## Sviluppo locale e test
