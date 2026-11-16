@@ -156,10 +156,14 @@
       q.required ? h('span', { class: 'sr-only', text: ' (obbligatoria)' }) : null,
     ];
     var el, inputs, value;
+    var describedBy = null; // id descrittivi sempre associati al campo (es. contatore)
 
     if (q.type === 'open') {
-      var ta = h('textarea', { id: id, rows: '4', maxlength: String(MAX_TEXT), 'aria-required': q.required ? 'true' : null });
-      el = h('div', { class: 'question' }, h('label', { class: 'q-title', for: id }, title), err, ta);
+      var counterId = id + '_count';
+      describedBy = counterId;
+      var ta = h('textarea', { id: id, rows: '4', maxlength: String(MAX_TEXT), 'aria-required': q.required ? 'true' : null, 'aria-describedby': counterId });
+      var counter = charCounter(ta, counterId);
+      el = h('div', { class: 'question' }, h('label', { class: 'q-title', for: id }, title), err, ta, counter);
       inputs = [ta];
       value = function () { return ta.value.replace(/\r\n/g, '\n').trim(); };
     } else {
@@ -185,8 +189,11 @@
       err.hidden = !msg;
       err.textContent = msg || '';
       inputs.forEach(function (i) {
-        if (msg) { i.setAttribute('aria-invalid', 'true'); i.setAttribute('aria-describedby', errId); }
-        else { i.removeAttribute('aria-invalid'); i.removeAttribute('aria-describedby'); }
+        var ids = [msg ? errId : null, describedBy].filter(Boolean).join(' ');
+        if (msg) i.setAttribute('aria-invalid', 'true');
+        else i.removeAttribute('aria-invalid');
+        if (ids) i.setAttribute('aria-describedby', ids);
+        else i.removeAttribute('aria-describedby');
       });
     }
     el.addEventListener('input', function () { if (el.classList.contains('has-error')) setError(null); });
@@ -196,6 +203,37 @@
       el: el, question: q, value: value, setError: setError,
       focus: function () { inputs[0].focus(); el.scrollIntoView({ block: 'center' }); },
     };
+  }
+
+  /**
+   * Contatore dei caratteri sotto il campo di testo libero.
+   * Conta come l'attributo maxlength del browser, così arriva al massimo esattamente
+   * quando il campo smette di accettare testo. Ai lettori di schermo il valore è
+   * disponibile come descrizione del campo; gli avvisi vocali scattano solo alle
+   * soglie (500 e 100 caratteri rimanenti, limite raggiunto) per non disturbare a ogni tasto.
+   */
+  function charCounter(ta, counterId) {
+    var fmt = function (n) { return n.toLocaleString('it-IT'); };
+    var text = h('span', { id: counterId });
+    var live = h('span', { class: 'sr-only', 'aria-live': 'polite' });
+    var box = h('div', { class: 'char-count' }, text, live);
+    var lastBand = null;
+    function update() {
+      var used = ta.value.length;
+      var left = MAX_TEXT - used;
+      text.textContent = fmt(used) + ' / ' + fmt(MAX_TEXT) + ' caratteri' +
+        (left <= 0 ? ' · limite raggiunto' : left <= MAX_TEXT * 0.1 ? ' · ne restano ' + fmt(left) : '');
+      box.classList.toggle('near', left > 0 && left <= MAX_TEXT * 0.1);
+      box.classList.toggle('full', left <= 0);
+      var band = left <= 0 ? 0 : left <= 100 ? 100 : left <= 500 ? 500 : null;
+      if (band !== lastBand && band !== null && (lastBand === null || band < lastBand)) {
+        live.textContent = band === 0 ? 'Limite di ' + fmt(MAX_TEXT) + ' caratteri raggiunto.' : 'Restano ' + fmt(left) + ' caratteri.';
+      }
+      lastBand = band;
+    }
+    ta.addEventListener('input', update);
+    update();
+    return box;
   }
 
   window.addEventListener('hashchange', load);
