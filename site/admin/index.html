@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self' https://*.supabase.co; form-action 'none'; base-uri 'none'; object-src 'none'">
+<meta name="referrer" content="no-referrer">
+<meta name="robots" content="noindex, nofollow">
+<title>Gestione questionari</title>
+<link rel="icon" type="image/png" href="../assets/favicon.png">
+<link rel="apple-touch-icon" href="../assets/apple-touch-icon.png">
+<link rel="stylesheet" href="../assets/admin.css">
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="#/">
+    <span class="brand-plate"><img src="../assets/logo.webp" alt="Insurance Solution Deployment" width="720" height="207"></span>
+    <span class="brand-label">Gestione questionari</span>
+  </a>
+  <div class="topbar-user">
+    <span class="user-email" id="user-email"></span>
+    <button type="button" class="btn btn-ghost btn-sm" id="logout" hidden>Esci</button>
+  </div>
+</header>
+<main class="wrap" id="app" aria-live="polite"></main>
+<div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+<noscript><div class="wrap"><p>Per usare l'area amministratore è necessario abilitare JavaScript.</p></div></noscript>
+<script src="../config.js"></script>
+<script src="../assets/api.js"></script>
+<script src="../assets/admin.js"></script>
+</body>
+</html>
