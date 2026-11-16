@@ -4,30 +4,52 @@ name: Keep-alive Supabase
 # Questo job esegue ogni 2 giorni una chiamata innocua al database
 # (get_survey con un codice inesistente: legge la tabella dei link e risponde "invalid").
 # Non crea dati e non tocca questionari, link o risposte.
+#
+# Configurazione: usa le variabili del repository SUPABASE_URL / SUPABASE_KEY se presenti;
+# altrimenti (es. variabili definite solo nell'ambiente "github-pages") legge gli stessi
+# valori pubblici dal config.js già pubblicato su GitHub Pages.
 
 on:
   schedule:
     - cron: '23 5 */2 * *'
   workflow_dispatch:
 
-permissions: {}
+permissions:
+  pages: read
 
 jobs:
   ping:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Chiamata al database
+      - name: Recupera la configurazione
         env:
-          SUPABASE_URL: ${{ vars.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ vars.SUPABASE_KEY }}
+          VAR_URL: ${{ vars.SUPABASE_URL }}
+          VAR_KEY: ${{ vars.SUPABASE_KEY }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_KEY" ]; then
-            echo "::error::Variabili SUPABASE_URL/SUPABASE_KEY non impostate."
+          url="$VAR_URL"; key="$VAR_KEY"
+          if [ -z "$url" ] || [ -z "$key" ]; then
+            site=$(gh api "repos/$GITHUB_REPOSITORY/pages" --jq .html_url 2>/dev/null || true)
+            [ -z "$site" ] && site="https://${GITHUB_REPOSITORY_OWNER,,}.github.io/${GITHUB_REPOSITORY#*/}/"
+            echo "Variabili del repository assenti: leggo ${site%/}/config.js"
+            cfg=$(curl -fsS --max-time 30 "${site%/}/config.js" || true)
+            url=$(printf '%s' "$cfg" | sed -nE "s/.*supabaseUrl[\"']?[[:space:]]*:[[:space:]]*[\"']([^\"']+)[\"'].*/\1/p" | head -n1)
+            key=$(printf '%s' "$cfg" | sed -nE "s/.*supabaseKey[\"']?[[:space:]]*:[[:space:]]*[\"']([^\"']+)[\"'].*/\1/p" | head -n1)
+          fi
+          if [ -z "$url" ] || [ -z "$key" ]; then
+            echo "::error::Configurazione Supabase non trovata: imposta le variabili del repository SUPABASE_URL e SUPABASE_KEY (Settings → Secrets and variables → Actions → Variables)."
             exit 1
           fi
+          echo "::add-mask::$key"
+          echo "SUPABASE_URL=${url%/}" >> "$GITHUB_ENV"
+          echo "SUPABASE_KEY=$key" >> "$GITHUB_ENV"
+          echo "Progetto: ${url%/}"
+
+      - name: Chiamata al database
+        run: |
           for attempt in 1 2 3; do
-            body=$(curl -sS --max-time 30 -X POST "${SUPABASE_URL%/}/rest/v1/rpc/get_survey" \
+            body=$(curl -sS --max-time 30 -X POST "$SUPABASE_URL/rest/v1/rpc/get_survey" \
               -H "apikey: $SUPABASE_KEY" -H "Content-Type: application/json" \
               -d '{"p_token":"keepalivecheck00000000"}') || body=""
             echo "Risposta: $body"
