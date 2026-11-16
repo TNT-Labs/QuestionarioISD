@@ -1,0 +1,592 @@
+'use strict';
+
+(function () {
+  var app = document.getElementById('app');
+  var logoutBtn = document.getElementById('logout');
+  var toastEl = document.getElementById('toast');
+
+  var TYPE_LABELS = { open: 'Risposta aperta', single: 'Scelta singola', multiple: 'Scelta multipla' };
+  var STATUS_LABELS = { draft: 'Bozza', open: 'Raccolta aperta', closed: 'Chiuso' };
+
+  // Stato dell'editor domande (modifiche non salvate)
+  var editor = null; // { id, dirty, data: { title, description, questions } }
+
+  // ------------------------------------------------------------------ utilità
+
+  /** Crea un elemento DOM. Il testo viene sempre inserito come textContent (niente HTML). */
+  function h(tag, attrs) {
+    var el = document.createElement(tag);
+    attrs = attrs || {};
+    Object.keys(attrs).forEach(function (k) {
+      var v = attrs[k];
+      if (v === null || v === undefined || v === false) return;
+      if (k === 'class') el.className = v;
+      else if (k === 'text') el.textContent = v;
+      else if (k.slice(0, 2) === 'on') el.addEventListener(k.slice(2), v);
+      else if (k === 'value') el.value = v;
+      else if (k === 'checked' || k === 'disabled' || k === 'selected') el[k] = !!v;
+      else el.setAttribute(k, v === true ? '' : v);
+    });
+    for (var i = 2; i < arguments.length; i++) append(el, arguments[i]);
+    return el;
+  }
+  function append(el, child) {
+    if (child === null || child === undefined || child === false) return;
+    if (Array.isArray(child)) child.forEach(function (c) { append(el, c); });
+    else el.appendChild(typeof child === 'string' || typeof child === 'number' ? document.createTextNode(String(child)) : child);
+  }
+  function clear(el) { while (el.firstChild) el.removeChild(el.firstChild); }
+
+  var toastTimer;
+  function toast(msg, kind) {
+    toastEl.textContent = msg;
+    toastEl.className = 'toast' + (kind ? ' toast-' + kind : '');
+    toastEl.hidden = false;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { toastEl.hidden = true; }, kind === 'error' ? 6000 : 3000);
+  }
+
+  function api(method, url, body) {
+    var opts = { method: method, headers: { 'X-Requested-With': 'fetch' }, credentials: 'same-origin' };
+    if (body !== undefined) {
+      opts.headers['Content-Type'] = 'application/json';
+      opts.body = JSON.stringify(body);
+    }
+    return fetch('/api' + url, opts).then(function (res) {
+      return res.text().then(function (txt) {
+        var data = null;
+        try { data = txt ? JSON.parse(txt) : null; } catch (e) { data = null; }
+        if (res.status === 401 && url !== '/login') {
+          editor = null;
+          renderLogin();
+          throw new Error('Sessione scaduta: effettua di nuovo l\'accesso.');
+        }
+        if (!res.ok) throw new Error((data && data.error) || 'Errore ' + res.status);
+        return data;
+      });
+    });
+  }
+
+  function fail(err) { toast(err.message || String(err), 'error'); }
+
+  function badge(status) {
+    return h('span', { class: 'badge badge-' + status, text: STATUS_LABELS[status] || status });
+  }
+
+  function confirmLeave() {
+    return !(editor && editor.dirty) || window.confirm('Ci sono modifiche non salvate alle domande. Abbandonarle?');
+  }
+
+  window.addEventListener('beforeunload', function (e) {
+    if (editor && editor.dirty) { e.preventDefault(); e.returnValue = ''; }
+  });
+
+  // ------------------------------------------------------------------ routing
+
+  var currentHash = location.hash;
+  window.addEventListener('hashchange', function () {
+    if (!confirmLeave()) {
+      history.replaceState(null, '', currentHash || '#/');
+      return;
+    }
+    editor = null;
+    currentHash = location.hash;
+    route();
+  });
+
+  function route() {
+    var m = location.hash.match(/^#\/q\/(\d+)(?:\/(domande|link|risultati))?$/);
+    if (m) return renderDetail(Number(m[1]), m[2] || 'domande');
+    return renderList();
+  }
+
+  function go(hash) {
+    if (location.hash === hash) route();
+    else location.hash = hash;
+  }
+
+  // -------------------------------------------------------------------- login
+
+  function renderLogin() {
+    logoutBtn.hidden = true;
+    clear(app);
+    var input = h('input', { type: 'password', id: 'pwd', name: 'password', autocomplete: 'current-password', required: true });
+    var err = h('p', { class: 'form-error', role: 'alert', hidden: true });
+    var btn = h('button', { type: 'submit', class: 'btn', text: 'Accedi' });
+    var form = h('form', { class: 'card login', onsubmit: function (e) {
+      e.preventDefault();
+      btn.disabled = true;
+      err.hidden = true;
+      api('POST', '/login', { password: input.value })
+        .then(function () { logoutBtn.hidden = false; route(); })
+        .catch(function (e2) { err.textContent = e2.message; err.hidden = false; btn.disabled = false; input.select(); });
+    } },
+      h('h1', { text: 'Accesso amministratore' }),
+      h('label', { for: 'pwd', text: 'Password' }),
+      input, err, btn
+    );
+    app.appendChild(form);
+    input.focus();
+  }
+
+  logoutBtn.addEventListener('click', function () {
+    if (!confirmLeave()) return;
+    editor = null;
+    api('POST', '/logout').then(renderLogin).catch(fail);
+  });
+
+  // ---------------------------------------------------------- elenco questionari
+
+  function renderList() {
+    api('GET', '/questionnaires').then(function (list) {
+      clear(app);
+      var title = h('input', { id: 'new-title', maxlength: '200', required: true, placeholder: 'Es. Questionario di gradimento 2026' });
+      var desc = h('textarea', { id: 'new-desc', rows: '2', maxlength: '5000', placeholder: 'Introduzione mostrata a chi risponde (facoltativa)' });
+      var newForm = h('form', { class: 'card new-form', hidden: true, onsubmit: function (e) {
+        e.preventDefault();
+        api('POST', '/questionnaires', { title: title.value, description: desc.value })
+          .then(function (q) { toast('Questionario creato'); go('#/q/' + q.id + '/domande'); })
+          .catch(fail);
+      } },
+        h('h2', { text: 'Nuovo questionario' }),
+        h('label', { for: 'new-title', text: 'Titolo' }), title,
+        h('label', { for: 'new-desc', text: 'Descrizione' }), desc,
+        h('div', { class: 'row-actions' },
+          h('button', { type: 'submit', class: 'btn', text: 'Crea' }),
+          h('button', { type: 'button', class: 'btn btn-ghost', text: 'Annulla', onclick: function () { newForm.hidden = true; newBtn.hidden = false; } })
+        )
+      );
+      var newBtn = h('button', { type: 'button', class: 'btn', text: '+ Nuovo questionario', onclick: function () {
+        newForm.hidden = false; newBtn.hidden = true; title.focus();
+      } });
+
+      app.appendChild(h('div', { class: 'page-head' }, h('h1', { text: 'Questionari' }), newBtn));
+      app.appendChild(newForm);
+
+      if (!list.length) {
+        app.appendChild(h('div', { class: 'card empty' },
+          h('p', { text: 'Non ci sono ancora questionari. Creane uno per iniziare.' })));
+        return;
+      }
+      var items = list.map(function (q) {
+        return h('li', null, h('a', { class: 'card q-item', href: '#/q/' + q.id },
+          h('div', { class: 'q-item-head' }, h('strong', { class: 'q-item-title', text: q.title }), badge(q.status)),
+          h('div', { class: 'q-item-stats' },
+            h('span', { text: q.question_count + (q.question_count === 1 ? ' domanda' : ' domande') }),
+            h('span', { text: (q.token_count - q.token_unused) + '/' + q.token_count + ' link usati' }),
+            h('span', { text: q.response_count + (q.response_count === 1 ? ' risposta' : ' risposte') })
+          )
+        ));
+      });
+      app.appendChild(h('ul', { class: 'q-list' }, items));
+    }).catch(fail);
+  }
+
+  // ---------------------------------------------------------- dettaglio
+
+  function renderDetail(id, tab) {
+    api('GET', '/questionnaires/' + id).then(function (q) {
+      clear(app);
+      app.appendChild(h('p', { class: 'back' }, h('a', { href: '#/', text: '← Tutti i questionari' })));
+
+      var actions = h('div', { class: 'status-actions' });
+      function statusBtn(label, status, cls) {
+        return h('button', { type: 'button', class: 'btn btn-sm ' + (cls || ''), text: label, onclick: function () {
+          if (!confirmLeave()) return;
+          if (status === 'closed' && !window.confirm('Chiudere la raccolta? I link non ancora usati non saranno più accettati (potrai riaprirla).')) return;
+          api('POST', '/questionnaires/' + id + '/status', { status: status })
+            .then(function () { editor = null; toast('Stato aggiornato: ' + STATUS_LABELS[status]); route(); })
+            .catch(fail);
+        } });
+      }
+      if (q.status !== 'open') actions.appendChild(statusBtn(q.status === 'closed' ? 'Riapri raccolta' : 'Apri raccolta', 'open'));
+      if (q.status === 'open') actions.appendChild(statusBtn('Sospendi (bozza)', 'draft', 'btn-ghost'));
+      if (q.status !== 'closed') actions.appendChild(statusBtn('Chiudi raccolta', 'closed', 'btn-ghost'));
+      actions.appendChild(h('button', { type: 'button', class: 'btn btn-sm btn-ghost', text: 'Duplica', onclick: function () {
+        if (!confirmLeave()) return;
+        api('POST', '/questionnaires/' + id + '/duplicate').then(function (copy) {
+          editor = null; toast('Copia creata'); go('#/q/' + copy.id + '/domande');
+        }).catch(fail);
+      } }));
+      actions.appendChild(h('button', { type: 'button', class: 'btn btn-sm btn-danger', text: 'Elimina', onclick: function () {
+        var msg = 'Eliminare definitivamente "' + q.title + '"?\nVerranno cancellati domande, link e ' + q.response_count + ' risposte.';
+        if (!window.confirm(msg)) return;
+        api('DELETE', '/questionnaires/' + id).then(function () { editor = null; toast('Questionario eliminato'); go('#/'); }).catch(fail);
+      } }));
+
+      app.appendChild(h('div', { class: 'detail-head' },
+        h('div', { class: 'detail-title' }, h('h1', { text: q.title }), badge(q.status)),
+        h('p', { class: 'muted', id: 'detail-meta', text: metaText(q) }),
+        actions
+      ));
+
+      var tabs = [['domande', 'Domande'], ['link', 'Link di accesso'], ['risultati', 'Risultati']];
+      app.appendChild(h('nav', { class: 'tabs', 'aria-label': 'Sezioni' }, tabs.map(function (t) {
+        return h('a', { href: '#/q/' + id + '/' + t[0], class: 'tab' + (t[0] === tab ? ' active' : ''), 'aria-current': t[0] === tab ? 'page' : null, text: t[1] });
+      })));
+
+      var panel = h('section', { class: 'panel' });
+      app.appendChild(panel);
+      if (tab === 'domande') renderQuestionsTab(panel, q);
+      else if (tab === 'link') renderLinksTab(panel, q);
+      else renderResultsTab(panel, q);
+    }).catch(function (e) {
+      fail(e);
+      if (/non trovato/i.test(e.message)) go('#/');
+    });
+  }
+
+  function metaText(q) {
+    return q.questions.length + ' domande · ' + (q.token_count - q.token_unused) + '/' + q.token_count +
+      ' link usati · ' + q.response_count + ' risposte';
+  }
+
+  // ---------------------------------------------------------- tab domande
+
+  function renderQuestionsTab(panel, q) {
+    var locked = q.response_count > 0 || q.status === 'open';
+    if (!editor || editor.id !== q.id) {
+      editor = {
+        id: q.id,
+        dirty: false,
+        data: {
+          title: q.title,
+          description: q.description,
+          questions: q.questions.map(function (x) {
+            return { type: x.type, text: x.text, required: x.required, options: x.options.map(function (o) { return o.text; }) };
+          }),
+        },
+      };
+    }
+    var d = editor.data;
+    function markDirty() { editor.dirty = true; saveBtn.disabled = false; dirtyNote.hidden = false; }
+
+    if (locked) {
+      panel.appendChild(h('div', { class: 'notice' }, q.response_count > 0
+        ? 'Sono già state raccolte risposte: le domande non sono più modificabili per non alterare i dati. Puoi modificare titolo e descrizione, oppure usare "Duplica" per creare una nuova versione.'
+        : 'La raccolta è aperta: per modificare le domande usa prima "Sospendi (bozza)". Titolo e descrizione restano modificabili.'));
+    }
+
+    var meta = h('div', { class: 'card' },
+      h('label', { for: 'q-title', text: 'Titolo' }),
+      h('input', { id: 'q-title', maxlength: '200', value: d.title, oninput: function (e) { d.title = e.target.value; markDirty(); } }),
+      h('label', { for: 'q-desc', text: 'Descrizione / introduzione' }),
+      h('textarea', { id: 'q-desc', rows: '3', maxlength: '5000', value: d.description, oninput: function (e) { d.description = e.target.value; markDirty(); } })
+    );
+    panel.appendChild(meta);
+
+    var listEl = h('div', { class: 'questions' });
+    panel.appendChild(listEl);
+
+    function renderQuestions(focusIndex) {
+      clear(listEl);
+      if (!d.questions.length) {
+        listEl.appendChild(h('div', { class: 'card empty' }, h('p', { text: locked ? 'Nessuna domanda.' : 'Nessuna domanda: aggiungine una con il pulsante qui sotto.' })));
+      }
+      d.questions.forEach(function (question, i) {
+        listEl.appendChild(locked ? readOnlyQuestion(question, i) : editableQuestion(question, i));
+      });
+      if (focusIndex !== undefined) {
+        var t = listEl.querySelector('#qt-' + focusIndex);
+        if (t) { t.focus(); t.scrollIntoView({ block: 'center', behavior: 'smooth' }); }
+      }
+    }
+
+    function readOnlyQuestion(question, i) {
+      return h('div', { class: 'card q-card' },
+        h('div', { class: 'q-card-head' },
+          h('span', { class: 'q-index', text: 'Domanda ' + (i + 1) }),
+          h('span', { class: 'chip', text: TYPE_LABELS[question.type] }),
+          question.required ? h('span', { class: 'chip chip-req', text: 'Obbligatoria' }) : h('span', { class: 'chip', text: 'Facoltativa' })
+        ),
+        h('p', { class: 'q-text', text: question.text }),
+        question.type !== 'open' ? h('ul', { class: 'opt-ro' }, question.options.map(function (o) { return h('li', { text: o }); })) : null
+      );
+    }
+
+    function editableQuestion(question, i) {
+      var n = d.questions.length;
+      var typeSel = h('select', { id: 'qtype-' + i, onchange: function (e) {
+        question.type = e.target.value;
+        while (question.type !== 'open' && question.options.length < 2) question.options.push('');
+        markDirty();
+        renderQuestions();
+        var sel = document.getElementById('qtype-' + i);
+        if (sel) sel.focus();
+      } }, Object.keys(TYPE_LABELS).map(function (k) {
+        return h('option', { value: k, selected: k === question.type, text: TYPE_LABELS[k] });
+      }));
+
+      var head = h('div', { class: 'q-card-head' },
+        h('span', { class: 'q-index', text: 'Domanda ' + (i + 1) }),
+        h('div', { class: 'q-tools' },
+          h('button', { type: 'button', class: 'icon-btn', title: 'Sposta su', 'aria-label': 'Sposta su la domanda ' + (i + 1), disabled: i === 0, text: '↑', onclick: function () { move(i, -1); } }),
+          h('button', { type: 'button', class: 'icon-btn', title: 'Sposta giù', 'aria-label': 'Sposta giù la domanda ' + (i + 1), disabled: i === n - 1, text: '↓', onclick: function () { move(i, 1); } }),
+          h('button', { type: 'button', class: 'icon-btn icon-danger', title: 'Elimina domanda', 'aria-label': 'Elimina la domanda ' + (i + 1), text: '✕', onclick: function () {
+            if (question.text.trim() && !window.confirm('Eliminare la domanda ' + (i + 1) + '?')) return;
+            d.questions.splice(i, 1); markDirty(); renderQuestions();
+          } })
+        )
+      );
+
+      var body = h('div', { class: 'q-edit' },
+        h('div', { class: 'q-edit-row' },
+          h('div', { class: 'field grow' },
+            h('label', { for: 'qt-' + i, text: 'Testo della domanda' }),
+            h('textarea', { id: 'qt-' + i, rows: '2', maxlength: '1000', value: question.text, oninput: function (e) { question.text = e.target.value; markDirty(); } })
+          ),
+          h('div', { class: 'field' },
+            h('label', { for: 'qtype-' + i, text: 'Tipo' }),
+            typeSel
+          )
+        ),
+        h('label', { class: 'check' },
+          h('input', { type: 'checkbox', checked: question.required, onchange: function (e) { question.required = e.target.checked; markDirty(); } }),
+          ' Risposta obbligatoria'
+        )
+      );
+
+      if (question.type !== 'open') {
+        var optList = h('ol', { class: 'opts' });
+        question.options.forEach(function (o, j) {
+          optList.appendChild(h('li', null,
+            h('input', { id: 'qo-' + i + '-' + j, 'aria-label': 'Risposta possibile ' + (j + 1), maxlength: '300', value: o, placeholder: 'Risposta ' + (j + 1),
+              oninput: function (e) { question.options[j] = e.target.value; markDirty(); },
+              onkeydown: function (e) {
+                if (e.key === 'Enter') { e.preventDefault(); addOption(question, i, j + 1); }
+              } }),
+            h('button', { type: 'button', class: 'icon-btn icon-danger', title: 'Rimuovi risposta', 'aria-label': 'Rimuovi risposta ' + (j + 1),
+              disabled: question.options.length <= 2, text: '✕', onclick: function () {
+                question.options.splice(j, 1); markDirty(); renderQuestions();
+              } })
+          ));
+        });
+        body.appendChild(h('div', { class: 'opts-box' },
+          h('span', { class: 'opts-label', text: question.type === 'single' ? 'Risposte possibili (se ne può scegliere una)' : 'Risposte possibili (se ne possono scegliere più di una)' }),
+          optList,
+          h('button', { type: 'button', class: 'btn btn-ghost btn-sm', text: '+ Aggiungi risposta', onclick: function () { addOption(question, i, question.options.length); } })
+        ));
+      }
+      return h('div', { class: 'card q-card' }, head, body);
+    }
+
+    function addOption(question, i, at) {
+      question.options.splice(at, 0, '');
+      markDirty();
+      renderQuestions();
+      var el = document.getElementById('qo-' + i + '-' + at);
+      if (el) el.focus();
+    }
+
+    function move(i, delta) {
+      var j = i + delta;
+      var tmp = d.questions[i]; d.questions[i] = d.questions[j]; d.questions[j] = tmp;
+      markDirty(); renderQuestions();
+      var btns = listEl.querySelectorAll('.q-card')[j];
+      if (btns) btns.scrollIntoView({ block: 'nearest' });
+    }
+
+    renderQuestions();
+
+    var addBar = h('div', { class: 'add-bar' });
+    if (!locked) {
+      Object.keys(TYPE_LABELS).forEach(function (k) {
+        addBar.appendChild(h('button', { type: 'button', class: 'btn btn-ghost', text: '+ ' + TYPE_LABELS[k], onclick: function () {
+          d.questions.push({ type: k, text: '', required: true, options: k === 'open' ? [] : ['', ''] });
+          markDirty();
+          renderQuestions(d.questions.length - 1);
+        } }));
+      });
+      panel.appendChild(addBar);
+    }
+
+    var dirtyNote = h('span', { class: 'dirty-note', text: 'Modifiche non salvate', hidden: !editor.dirty });
+    var saveBtn = h('button', { type: 'button', class: 'btn', text: 'Salva', disabled: !editor.dirty, onclick: function () {
+      var payload = { title: d.title, description: d.description };
+      if (!locked) {
+        payload.questions = d.questions.map(function (x) {
+          return { type: x.type, text: x.text, required: x.required, options: x.type === 'open' ? [] : x.options.filter(function (o) { return o.trim(); }) };
+        });
+      }
+      saveBtn.disabled = true;
+      api('PUT', '/questionnaires/' + q.id, payload).then(function () {
+        editor = null;
+        toast('Salvato');
+        route();
+      }).catch(function (e) { saveBtn.disabled = false; fail(e); });
+    } });
+    panel.appendChild(h('div', { class: 'save-bar' }, dirtyNote, saveBtn));
+  }
+
+  // ---------------------------------------------------------- tab link
+
+  function renderLinksTab(panel, q) {
+    var used = q.token_count - q.token_unused;
+    panel.appendChild(h('div', { class: 'stats' },
+      stat('Link generati', q.token_count),
+      stat('Usati', used),
+      stat('Disponibili', q.token_unused)
+    ));
+
+    panel.appendChild(h('div', { class: 'notice' },
+      'Ogni link è personale e consente una sola compilazione. I link vengono mostrati solo al momento della generazione ' +
+      '(sul server ne resta soltanto un\'impronta crittografica): scaricali o copiali subito. ' +
+      'Le risposte non sono in alcun modo collegate al link usato.'));
+
+    if (q.status !== 'open') {
+      panel.appendChild(h('div', { class: 'notice notice-warn', text: 'La raccolta non è aperta: i link funzioneranno solo dopo aver cliccato "Apri raccolta".' }));
+    }
+
+    var count = h('input', { id: 'tok-count', type: 'number', min: '1', max: '2000', value: '10', inputmode: 'numeric' });
+    var output = h('div', { class: 'links-out' });
+    var genBtn = h('button', { type: 'submit', class: 'btn', text: 'Genera link' });
+    panel.appendChild(h('form', { class: 'card gen-form', onsubmit: function (e) {
+      e.preventDefault();
+      var n = Number(count.value);
+      genBtn.disabled = true;
+      api('POST', '/questionnaires/' + q.id + '/tokens', { count: n }).then(function (res) {
+        genBtn.disabled = false;
+        showLinks(output, res.links, q);
+        refreshStats();
+      }).catch(function (e2) { genBtn.disabled = false; fail(e2); });
+    } },
+      h('h2', { text: 'Genera nuovi link' }),
+      h('div', { class: 'inline-form' },
+        h('div', { class: 'field' }, h('label', { for: 'tok-count', text: 'Quanti link (uno per destinatario)' }), count),
+        genBtn
+      ),
+      output
+    ));
+
+    if (q.token_unused > 0) {
+      panel.appendChild(h('div', { class: 'card danger-zone' },
+        h('h2', { text: 'Revoca link non usati' }),
+        h('p', { class: 'muted', text: 'Invalida tutti i ' + q.token_unused + ' link non ancora utilizzati (es. se sono stati diffusi per errore). Le risposte già raccolte non vengono toccate.' }),
+        h('button', { type: 'button', class: 'btn btn-danger', text: 'Revoca ' + q.token_unused + ' link', onclick: function () {
+          if (!window.confirm('Revocare tutti i link non ancora usati? L\'operazione è irreversibile.')) return;
+          api('DELETE', '/questionnaires/' + q.id + '/tokens/unused').then(function (r) {
+            toast(r.revoked + ' link revocati'); route();
+          }).catch(fail);
+        } })
+      ));
+    }
+
+    function refreshStats() {
+      api('GET', '/questionnaires/' + q.id).then(function (fresh) {
+        var vals = panel.querySelectorAll('.stat-value');
+        if (vals.length === 3) {
+          vals[0].textContent = fresh.token_count;
+          vals[1].textContent = fresh.token_count - fresh.token_unused;
+          vals[2].textContent = fresh.token_unused;
+        }
+        var meta = document.getElementById('detail-meta');
+        if (meta) meta.textContent = metaText(fresh);
+      }).catch(function () {});
+    }
+  }
+
+  function stat(label, value) {
+    return h('div', { class: 'stat' }, h('span', { class: 'stat-value', text: value }), h('span', { class: 'stat-label', text: label }));
+  }
+
+  function showLinks(container, links, q) {
+    clear(container);
+    var text = links.join('\n');
+    var area = h('textarea', { class: 'links-area', rows: String(Math.min(10, links.length + 1)), readonly: true, value: text, 'aria-label': 'Link generati' });
+    var base = 'link-questionario-' + q.id + '-' + new Date().toISOString().slice(0, 10);
+    container.appendChild(h('div', { class: 'notice notice-ok', text: links.length + ' link generati. Salvali ora: non sarà possibile visualizzarli di nuovo.' }));
+    container.appendChild(area);
+    container.appendChild(h('div', { class: 'row-actions' },
+      h('button', { type: 'button', class: 'btn btn-sm', text: 'Copia tutti', onclick: function () {
+        copy(text, area);
+      } }),
+      h('button', { type: 'button', class: 'btn btn-sm btn-ghost', text: 'Scarica .csv', onclick: function () {
+        var csv = '﻿link\r\n' + links.join('\r\n') + '\r\n';
+        download(base + '.csv', csv, 'text/csv;charset=utf-8');
+      } }),
+      h('button', { type: 'button', class: 'btn btn-sm btn-ghost', text: 'Scarica .txt', onclick: function () {
+        download(base + '.txt', text + '\n', 'text/plain;charset=utf-8');
+      } })
+    ));
+  }
+
+  function copy(text, fallbackEl) {
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(text).then(function () { toast('Link copiati negli appunti'); }, function () { manualCopy(fallbackEl); });
+    } else manualCopy(fallbackEl);
+  }
+  function manualCopy(el) {
+    el.focus(); el.select();
+    var ok = false;
+    try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+    toast(ok ? 'Link copiati negli appunti' : 'Seleziona il testo e premi Ctrl+C per copiarlo', ok ? null : 'error');
+  }
+  function download(name, content, type) {
+    var url = URL.createObjectURL(new Blob([content], { type: type }));
+    var a = h('a', { href: url, download: name });
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+  }
+
+  // ---------------------------------------------------------- tab risultati
+
+  function renderResultsTab(panel, q) {
+    api('GET', '/questionnaires/' + q.id + '/results').then(function (r) {
+      panel.appendChild(h('div', { class: 'results-head' },
+        h('div', { class: 'stats' }, stat('Risposte ricevute', r.total)),
+        h('div', { class: 'row-actions' },
+          h('button', { type: 'button', class: 'btn btn-ghost btn-sm', text: 'Aggiorna', onclick: route }),
+          r.total > 0 ? h('a', { class: 'btn btn-sm', href: '/api/questionnaires/' + q.id + '/export.csv', download: '', text: 'Esporta CSV' }) : null
+        )
+      ));
+      if (!r.total) {
+        panel.appendChild(h('div', { class: 'card empty' }, h('p', { text: 'Nessuna risposta ancora ricevuta.' })));
+        return;
+      }
+      panel.appendChild(h('p', { class: 'muted small', text: 'Le risposte sono anonime e mostrate in ordine casuale, non in ordine di arrivo.' }));
+      r.questions.forEach(function (question, i) {
+        var card = h('div', { class: 'card result' },
+          h('div', { class: 'q-card-head' },
+            h('span', { class: 'q-index', text: 'Domanda ' + (i + 1) }),
+            h('span', { class: 'chip', text: TYPE_LABELS[question.type] }),
+            h('span', { class: 'muted small', text: question.answered + ' su ' + r.total + ' hanno risposto' })
+          ),
+          h('p', { class: 'q-text', text: question.text })
+        );
+        if (question.type === 'open') {
+          card.appendChild(question.answers.length
+            ? h('ul', { class: 'open-answers' }, question.answers.map(function (a) { return h('li', { text: a }); }))
+            : h('p', { class: 'muted', text: 'Nessuna risposta.' }));
+        } else {
+          card.appendChild(h('div', { class: 'bars' }, question.options.map(function (o) {
+            var pct = question.answered ? Math.round((o.count / question.answered) * 1000) / 10 : 0;
+            return h('div', { class: 'bar-row' },
+              h('span', { class: 'bar-label', text: o.text }),
+              h('span', { class: 'bar-track', 'aria-hidden': 'true' },
+                barFill(question.answered ? (o.count / question.answered) * 100 : 0)),
+              h('span', { class: 'bar-value', text: o.count + ' (' + String(pct).replace('.', ',') + '%)' })
+            );
+          })));
+          if (question.type === 'multiple') {
+            card.appendChild(h('p', { class: 'muted small', text: 'Scelta multipla: le percentuali sono calcolate su chi ha risposto e possono superare il 100% in totale.' }));
+          }
+        }
+        panel.appendChild(card);
+      });
+    }).catch(fail);
+  }
+
+  /** Barra orizzontale: larghezza impostata via CSSOM (consentito dalla CSP, a differenza dell'attributo style). */
+  function barFill(pct) {
+    var el = h('span', { class: 'bar-fill' });
+    el.style.width = pct + '%';
+    return el;
+  }
+
+  // ---------------------------------------------------------- avvio
+
+  api('GET', '/session').then(function (s) {
+    if (s && s.authenticated) { logoutBtn.hidden = false; route(); }
+    else renderLogin();
+  }).catch(function () { renderLogin(); });
+})();

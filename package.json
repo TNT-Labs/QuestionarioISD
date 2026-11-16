@@ -1,0 +1,18 @@
+{
+  "name": "questionario-isd",
+  "version": "1.0.0",
+  "description": "Raccolta anonima di risposte a questionari con link monouso e area amministratore",
+  "private": true,
+  "main": "src/server.js",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning src/server.js",
+    "dev": "node --disable-warning=ExperimentalWarning --watch src/server.js",
+    "test": "node --disable-warning=ExperimentalWarning --test \"test/**/*.test.js\""
+  },
+  "dependencies": {
+    "express": "^5.1.0"
+  }
+}
