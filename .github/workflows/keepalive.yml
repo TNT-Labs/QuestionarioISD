@@ -1,0 +1,41 @@
+name: Keep-alive Supabase
+
+# Il piano gratuito di Supabase sospende i progetti dopo ~7 giorni senza attività.
+# Questo job esegue ogni 2 giorni una chiamata innocua al database
+# (get_survey con un codice inesistente: legge la tabella dei link e risponde "invalid").
+# Non crea dati e non tocca questionari, link o risposte.
+
+on:
+  schedule:
+    - cron: '23 5 */2 * *'
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Chiamata al database
+        env:
+          SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ vars.SUPABASE_KEY }}
+        run: |
+          if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_KEY" ]; then
+            echo "::error::Variabili SUPABASE_URL/SUPABASE_KEY non impostate."
+            exit 1
+          fi
+          for attempt in 1 2 3; do
+            body=$(curl -sS --max-time 30 -X POST "${SUPABASE_URL%/}/rest/v1/rpc/get_survey" \
+              -H "apikey: $SUPABASE_KEY" -H "Content-Type: application/json" \
+              -d '{"p_token":"keepalivecheck00000000"}') || body=""
+            echo "Risposta: $body"
+            if echo "$body" | grep -q '"status"'; then
+              echo "Database attivo."
+              exit 0
+            fi
+            sleep 20
+          done
+          echo "::error::Il database non risponde: il progetto potrebbe essere sospeso. Riattivalo dalla dashboard di Supabase."
+          exit 1
