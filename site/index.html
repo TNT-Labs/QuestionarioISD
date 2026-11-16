@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self' https://*.supabase.co; form-action 'none'; base-uri 'none'; object-src 'none'">
+<meta name="referrer" content="no-referrer">
+<meta name="robots" content="noindex, nofollow">
+<title>Questionario</title>
+<link rel="icon" type="image/png" href="assets/favicon.png">
+<link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
+<link rel="stylesheet" href="assets/survey.css">
+</head>
+<body>
+<header class="brandbar">
+  <span class="brand-plate"><img src="assets/logo.webp" alt="Insurance Solution Deployment" width="720" height="207"></span>
+</header>
+<main class="wrap" id="app">
+  <section class="card message"><p class="loading" role="status">Caricamento del questionario…</p></section>
+</main>
+<noscript><div class="wrap"><section class="card message message-error"><h1>JavaScript disattivato</h1><p>Per compilare il questionario è necessario abilitare JavaScript.</p></section></div></noscript>
+<script src="config.js"></script>
+<script src="assets/api.js"></script>
+<script src="assets/survey.js"></script>
+</body>
+</html>
