@@ -72,6 +72,7 @@
     }
     editor = null;
     currentHash = location.hash;
+    window.scrollTo(0, 0); // nuova vista: si riparte dall'inizio della pagina
     route();
   });
 
@@ -131,6 +132,7 @@
     logoutBtn.hidden = false;
     var s = QISD.session();
     userEmail.textContent = (s && s.email) || '';
+    window.scrollTo(0, 0);
     route();
   }
 
