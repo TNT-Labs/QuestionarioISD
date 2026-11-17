@@ -148,17 +148,20 @@
       var title = h('input', { id: 'new-title', maxlength: '200', required: true, placeholder: 'Es. Questionario di soddisfazione 2026' });
       var desc = h('textarea', { id: 'new-desc', rows: '2', maxlength: '5000', placeholder: 'Introduzione mostrata a chi risponde (facoltativa)' });
       var newBtn;
+      var createBtn = h('button', { type: 'submit', class: 'btn', text: 'Crea' });
       var newForm = h('form', { class: 'card new-form', hidden: true, onsubmit: function (e) {
         e.preventDefault();
+        if (createBtn.disabled) return;
+        createBtn.disabled = true; // evita doppioni con il doppio clic
         rpc('admin_create', { p_title: title.value, p_description: desc.value })
           .then(function (id) { toast('Questionario creato'); go('#/q/' + id + '/domande'); })
-          .catch(fail);
+          .catch(function (e2) { createBtn.disabled = false; fail(e2); });
       } },
         h('h2', { text: 'Nuovo questionario' }),
         h('label', { for: 'new-title', text: 'Titolo' }), title,
         h('label', { for: 'new-desc', text: 'Descrizione' }), desc,
         h('div', { class: 'row-actions' },
-          h('button', { type: 'submit', class: 'btn', text: 'Crea' }),
+          createBtn,
           h('button', { type: 'button', class: 'btn btn-ghost', text: 'Annulla', onclick: function () { newForm.hidden = true; newBtn.hidden = false; } })
         )
       );
@@ -199,7 +202,7 @@
       function statusBtn(label, status, cls) {
         return h('button', { type: 'button', class: 'btn btn-sm ' + (cls || ''), text: label, onclick: function () {
           if (!confirmLeave()) return;
-          if (status === 'closed' && !window.confirm('Chiudere la raccolta? I link non ancora usati non saranno più accettati (potrai riaprirla).')) return;
+          if (status === 'closed' && !window.confirm('Chiudere la raccolta? Nessun link, personale o pubblico, accetterà più risposte (potrai riaprirla).')) return;
           rpc('admin_set_status', { p_id: id, p_status: status })
             .then(function () { editor = null; toast('Stato aggiornato: ' + STATUS_LABELS[status]); route(); })
             .catch(fail);
@@ -208,11 +211,13 @@
       if (q.status !== 'open') actions.appendChild(statusBtn(q.status === 'closed' ? 'Riapri raccolta' : 'Apri raccolta', 'open'));
       if (q.status === 'open') actions.appendChild(statusBtn('Sospendi (bozza)', 'draft', 'btn-ghost'));
       if (q.status !== 'closed') actions.appendChild(statusBtn('Chiudi raccolta', 'closed', 'btn-ghost'));
-      actions.appendChild(h('button', { type: 'button', class: 'btn btn-sm btn-ghost', text: 'Duplica', onclick: function () {
-        if (!confirmLeave()) return;
+      actions.appendChild(h('button', { type: 'button', class: 'btn btn-sm btn-ghost', text: 'Duplica', onclick: function (e) {
+        var btn = e.currentTarget;
+        if (btn.disabled || !confirmLeave()) return;
+        btn.disabled = true; // evita copie doppie con il doppio clic
         rpc('admin_duplicate', { p_id: id }).then(function (newId) {
           editor = null; toast('Copia creata'); go('#/q/' + newId + '/domande');
-        }).catch(fail);
+        }).catch(function (e2) { btn.disabled = false; fail(e2); });
       } }));
       actions.appendChild(h('button', { type: 'button', class: 'btn btn-sm btn-danger', text: 'Elimina', onclick: function () {
         var msg = 'Eliminare definitivamente "' + q.title + '"?\nVerranno cancellati domande, link e ' + plural(q.response_count, 'risposta', 'risposte') + '.';
@@ -433,8 +438,10 @@
       statsEl.appendChild(stat('Link personali disponibili', fresh.token_unused));
       statsEl.appendChild(stat('Link pubblico', fresh.public_slug ? 'Attivo' : 'Disattivo'));
     }
+    var revokeBox = h('div');
     function refreshHeader(fresh) {
       renderStats(fresh);
+      renderRevoke(fresh.token_unused);
       var meta = document.getElementById('detail-meta');
       if (meta) meta.textContent = metaText(fresh);
     }
@@ -515,18 +522,25 @@
       output
     ));
 
-    if (q.token_unused > 0) {
-      panel.appendChild(h('div', { class: 'card danger-zone' },
+    // Sezione revoca: aggiornata a ogni generazione (prima compariva solo ricaricando la pagina).
+    panel.appendChild(revokeBox);
+    function renderRevoke(n) {
+      clear(revokeBox);
+      if (!(n > 0)) return;
+      revokeBox.appendChild(h('div', { class: 'card danger-zone' },
         h('h3', { text: 'Revoca link personali non usati' }),
-        h('p', { class: 'muted', text: 'Invalida tutti i ' + q.token_unused + ' link non ancora utilizzati (es. se sono stati diffusi per errore). Le risposte già raccolte non vengono toccate.' }),
-        h('button', { type: 'button', class: 'btn btn-danger', text: 'Revoca ' + plural(q.token_unused, 'link', 'link'), onclick: function () {
-          if (!window.confirm('Revocare tutti i link non ancora usati? L\'operazione è irreversibile.')) return;
-          rpc('admin_revoke_tokens', { p_id: q.id }).then(function (n) {
-            toast(plural(n, 'link revocato', 'link revocati')); route();
-          }).catch(fail);
+        h('p', { class: 'muted', text: (n === 1 ? 'Invalida l\'unico link non ancora utilizzato' : 'Invalida tutti i ' + n + ' link non ancora utilizzati') +
+          ' (es. se sono stati diffusi per errore). Le risposte già raccolte non vengono toccate.' }),
+        h('button', { type: 'button', class: 'btn btn-danger', text: 'Revoca ' + plural(n, 'link', 'link'), onclick: function (e) {
+          if (!window.confirm('Revocare tutti i link personali non ancora usati? L\'operazione è irreversibile.')) return;
+          e.currentTarget.disabled = true;
+          rpc('admin_revoke_tokens', { p_id: q.id }).then(function (count) {
+            toast(plural(count, 'link revocato', 'link revocati')); route();
+          }).catch(function (e2) { route(); fail(e2); });
         } })
       ));
     }
+    renderRevoke(q.token_unused);
   }
 
   function stat(label, value) {

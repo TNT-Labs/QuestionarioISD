@@ -16,10 +16,18 @@
   var app = document.getElementById('app');
   var MAX_TEXT = 5000;
 
-  /** Legge il link dal frammento: { mode: 'token' | 'public', code } oppure null. */
+  /**
+   * Legge il link dal frammento: { mode: 'token' | 'public', code }, { invalid: true }
+   * se il frammento è presente ma non riconoscibile, oppure null se manca.
+   * Tollera le alterazioni tipiche di email e chat: caratteri codificati (%3D)
+   * e punteggiatura aggiunta in coda (es. "…#t=abc." o "…#t=abc)").
+   */
   function linkFromHash() {
-    var m = location.hash.match(/^#(?:([tp])=)?([A-Za-z0-9_-]{16,64})$/);
-    if (!m) return null;
+    var raw = location.hash.replace(/^#/, '');
+    if (!raw) return null;
+    try { raw = decodeURIComponent(raw); } catch (e) { /* lascia il valore com'è */ }
+    var m = raw.match(/^\s*(?:([tp])\s*=\s*)?([A-Za-z0-9_-]{16,64})(?![A-Za-z0-9_-])/);
+    if (!m) return { invalid: true };
     return { mode: m[1] === 'p' ? 'public' : 'token', code: m[2] };
   }
 
@@ -75,6 +83,9 @@
   function load() {
     var link = linkFromHash();
     if (!link) return message('Questionario', 'Per partecipare apri il link che hai ricevuto.');
+    if (link.invalid) {
+      return message('Link non valido', 'Il link sembra incompleto o modificato. Verifica di averlo copiato per intero.', 'error');
+    }
     if (!QISD.configured()) return message('Configurazione mancante', 'Il servizio non è ancora configurato.', 'error');
     if (link.mode === 'public' && alreadyDone(link.code)) return alreadyDoneMessage();
     var fn = link.mode === 'public' ? 'get_public_survey' : 'get_survey';
