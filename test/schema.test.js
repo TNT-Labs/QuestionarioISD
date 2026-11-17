@@ -222,3 +222,81 @@ test('HTTP: endpoint emulati di Supabase (auth + rpc)', async () => {
     await srv.close();
   }
 });
+
+test('link pubblico: disattivato per default, risposte multiple, nessun consumo', async () => {
+  const id = await asAdmin('admin_create', { p_title: 'Pubblico' });
+  const q = await asAdmin('admin_update', { p_id: id, p_title: 'Pubblico', p_description: '', p_questions: QUESTIONS });
+  assert.equal(q.public_slug, null, 'disattivato per default');
+
+  const on = await asAdmin('admin_public_link', { p_id: id, p_action: 'enable' });
+  const slug = on.public_slug;
+  assert.match(slug, /^[0-9a-f]{32}$/);
+  // enable è idempotente: non cambia il link esistente
+  assert.equal((await asAdmin('admin_public_link', { p_id: id, p_action: 'enable' })).public_slug, slug);
+
+  // Raccolta non aperta
+  assert.equal((await asAnon('get_public_survey', { p_slug: slug })).status, 'draft');
+  assert.equal((await asAnon('submit_public_response', { p_slug: slug, p_answers: answers(q) })).status, 'draft');
+  await asAdmin('admin_set_status', { p_id: id, p_status: 'open' });
+
+  const s1 = await asAnon('get_public_survey', { p_slug: slug });
+  assert.equal(s1.status, 'ok');
+  assert.equal(s1.questionnaire.questions.length, 3);
+  assert.equal(s1.questionnaire.id, undefined, 'l\'id interno non viene esposto');
+
+  // Stesso link, più risposte: il link non viene consumato
+  for (let i = 0; i < 3; i++) {
+    assert.deepEqual(await asAnon('submit_public_response', { p_slug: slug, p_answers: answers(q, { single: i % 2 }) }), { status: 'ok' });
+  }
+  assert.equal((await asAnon('get_public_survey', { p_slug: slug })).status, 'ok');
+  const r = await asAdmin('admin_results', { p_id: id });
+  assert.equal(r.total, 3);
+  assert.deepEqual(r.questions[1].options.map((o) => o.count), [2, 1]);
+
+  // Stessa validazione dei link personali
+  const [qo, qs] = q.questions;
+  const bad = await asAnon('submit_public_response', { p_slug: slug, p_answers: { [qo.id]: ' ', [qs.id]: [999999] } });
+  assert.equal(bad.status, 'errors');
+  assert.match(bad.errors[qo.id], /obbligatoria/);
+  assert.match(bad.errors[qs.id], /non valida/);
+  assert.equal((await asAdmin('admin_get', { p_id: id })).response_count, 3, 'risposta non valida non salvata');
+
+  // Il link pubblico non funziona come link personale e viceversa
+  assert.equal((await asAnon('get_survey', { p_token: slug })).status, 'invalid');
+  assert.equal((await asAnon('submit_response', { p_token: slug, p_answers: answers(q) })).status, 'invalid');
+});
+
+test('link pubblico: rigenera, disattiva, chiusura e coesistenza con i link personali', async () => {
+  const { id, q, toks } = await openQuestionnaire(1);
+  const slug1 = (await asAdmin('admin_public_link', { p_id: id, p_action: 'enable' })).public_slug;
+
+  const slug2 = (await asAdmin('admin_public_link', { p_id: id, p_action: 'regenerate' })).public_slug;
+  assert.notEqual(slug2, slug1);
+  assert.equal((await asAnon('get_public_survey', { p_slug: slug1 })).status, 'invalid', 'il vecchio link non funziona più');
+  assert.deepEqual(await asAnon('submit_public_response', { p_slug: slug2, p_answers: answers(q) }), { status: 'ok' });
+
+  // I link personali continuano a funzionare in parallelo
+  assert.deepEqual(await asAnon('submit_response', { p_token: toks[0], p_answers: answers(q) }), { status: 'ok' });
+  assert.equal((await asAdmin('admin_get', { p_id: id })).response_count, 2);
+
+  await asAdmin('admin_set_status', { p_id: id, p_status: 'closed' });
+  assert.equal((await asAnon('submit_public_response', { p_slug: slug2, p_answers: answers(q) })).status, 'closed');
+  await asAdmin('admin_set_status', { p_id: id, p_status: 'open' });
+
+  assert.equal((await asAdmin('admin_public_link', { p_id: id, p_action: 'disable' })).public_slug, null);
+  assert.equal((await asAnon('get_public_survey', { p_slug: slug2 })).status, 'invalid');
+  assert.equal((await asAnon('submit_public_response', { p_slug: slug2, p_answers: answers(q) })).status, 'invalid');
+
+  // La copia non eredita il link pubblico
+  await asAdmin('admin_public_link', { p_id: id, p_action: 'enable' });
+  const dup = await asAdmin('admin_get', { p_id: await asAdmin('admin_duplicate', { p_id: id }) });
+  assert.equal(dup.public_slug, null);
+
+  // Permessi e input non validi
+  await assert.rejects(asAnon('admin_public_link', { p_id: id, p_action: 'enable' }), { code: '42501' });
+  await assert.rejects(s.rpc('admin_public_link', { p_id: id, p_action: 'enable' }, { sub: user }), /amministratori/);
+  await assert.rejects(asAdmin('admin_public_link', { p_id: id, p_action: 'boh' }), /Azione non valida/);
+  await assert.rejects(asAnon('_store_answers', { p_id: id }), /./);
+  assert.equal((await asAnon('get_public_survey', { p_slug: "x' or 1=1 --" })).status, 'invalid');
+  assert.equal((await asAnon('get_public_survey', { p_slug: null })).status, 'invalid');
+});

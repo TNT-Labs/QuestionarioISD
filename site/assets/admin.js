@@ -48,8 +48,11 @@
   function metaText(q) {
     return plural(q.questions.length, 'domanda', 'domande') + ' · ' +
       plural(q.token_unused, 'link disponibile', 'link disponibili') + ' · ' +
+      (q.public_slug ? 'link pubblico attivo · ' : '') +
       plural(q.response_count, 'risposta', 'risposte');
   }
+
+  function publicLink(slug) { return surveyBaseUrl() + '#p=' + slug; }
 
   function confirmLeave() {
     return !(editor && editor.dirty) || window.confirm('Ci sono modifiche non salvate. Abbandonarle?');
@@ -177,6 +180,7 @@
           h('div', { class: 'q-item-stats' },
             h('span', { text: plural(q.question_count, 'domanda', 'domande') }),
             h('span', { text: plural(q.token_unused, 'link disponibile', 'link disponibili') }),
+            q.public_slug ? h('span', { class: 'chip chip-public', text: 'Link pubblico' }) : null,
             h('span', { text: plural(q.response_count, 'risposta', 'risposte') })
           )
         ));
@@ -425,20 +429,68 @@
     var statsEl = h('div', { class: 'stats' });
     function renderStats(fresh) {
       clear(statsEl);
-      statsEl.appendChild(stat('Link disponibili', fresh.token_unused));
       statsEl.appendChild(stat('Risposte ricevute', fresh.response_count));
+      statsEl.appendChild(stat('Link personali disponibili', fresh.token_unused));
+      statsEl.appendChild(stat('Link pubblico', fresh.public_slug ? 'Attivo' : 'Disattivo'));
+    }
+    function refreshHeader(fresh) {
+      renderStats(fresh);
+      var meta = document.getElementById('detail-meta');
+      if (meta) meta.textContent = metaText(fresh);
     }
     renderStats(q);
     panel.appendChild(statsEl);
 
+    if (q.status !== 'open') {
+      panel.appendChild(h('div', { class: 'notice notice-warn', text: 'La raccolta non è aperta: i link funzioneranno solo dopo aver cliccato "Apri raccolta".' }));
+    }
+
+    // --- Link pubblico (unico per tutti)
+    var publicCard = h('section', { class: 'card public-card', 'aria-labelledby': 'public-title' });
+    panel.appendChild(publicCard);
+    function renderPublic(slug) {
+      clear(publicCard);
+      publicCard.appendChild(h('h2', { id: 'public-title', text: 'Link pubblico (uguale per tutti)' }));
+      publicCard.appendChild(h('p', { class: 'muted', text:
+        'Un solo link da condividere con tutti (email, intranet, QR code…). Non si consuma: chiunque lo abbia può rispondere ' +
+        'e il server non effettua alcun controllo su chi risponde. Per evitare compilazioni ripetute, il browser di chi risponde ' +
+        'ricorda soltanto di aver già inviato il questionario: è un deterrente, non una garanzia (basta un altro browser o la navigazione privata).' }));
+      function act(action, confirmMsg, okMsg) {
+        return function () {
+          if (confirmMsg && !window.confirm(confirmMsg)) return;
+          var btns = publicCard.querySelectorAll('button');
+          btns.forEach(function (b) { b.disabled = true; });
+          rpc('admin_public_link', { p_id: q.id, p_action: action }).then(function (fresh) {
+            renderPublic(fresh.public_slug);
+            refreshHeader(fresh);
+            toast(okMsg);
+          }).catch(function (e) { btns.forEach(function (b) { b.disabled = false; }); fail(e); });
+        };
+      }
+      if (!slug) {
+        publicCard.appendChild(h('button', { type: 'button', class: 'btn', text: 'Attiva link pubblico',
+          onclick: act('enable', null, 'Link pubblico attivato') }));
+        return;
+      }
+      var url = publicLink(slug);
+      var input = h('input', { id: 'public-url', class: 'link-input', readonly: true, value: url, 'aria-label': 'Link pubblico',
+        onfocus: function (e) { e.target.select(); } });
+      publicCard.appendChild(h('div', { class: 'link-row' }, input,
+        h('button', { type: 'button', class: 'btn btn-sm', text: 'Copia link', onclick: function () { copy(url, input, 'Link copiato negli appunti'); } })));
+      publicCard.appendChild(h('div', { class: 'row-actions' },
+        h('button', { type: 'button', class: 'btn btn-sm btn-ghost', text: 'Rigenera link',
+          onclick: act('regenerate', 'Generare un nuovo link pubblico? Quello attuale smetterà subito di funzionare.', 'Nuovo link pubblico generato') }),
+        h('button', { type: 'button', class: 'btn btn-sm btn-danger', text: 'Disattiva link pubblico',
+          onclick: act('disable', 'Disattivare il link pubblico? Chi lo apre vedrà "link non valido". Le risposte già raccolte restano.', 'Link pubblico disattivato') })));
+    }
+    renderPublic(q.public_slug);
+
+    // --- Link personali monouso
+    panel.appendChild(h('h2', { class: 'section-title', text: 'Link personali monouso' }));
     panel.appendChild(h('div', { class: 'notice' },
       'Ogni link è personale e consente una sola compilazione: dopo l\'uso viene eliminato. ' +
       'I link vengono mostrati solo al momento della generazione (nel database ne resta soltanto un\'impronta crittografica): scaricali o copiali subito. ' +
       'Le risposte non sono in alcun modo collegate al link usato.'));
-
-    if (q.status !== 'open') {
-      panel.appendChild(h('div', { class: 'notice notice-warn', text: 'La raccolta non è aperta: i link funzioneranno solo dopo aver cliccato "Apri raccolta".' }));
-    }
 
     var count = h('input', { id: 'tok-count', type: 'number', min: '1', max: '2000', value: '10', inputmode: 'numeric' });
     var output = h('div', { class: 'links-out' });
@@ -452,14 +504,10 @@
         genBtn.disabled = false;
         var base = surveyBaseUrl();
         showLinks(output, tokens.map(function (t) { return base + '#t=' + t; }), q);
-        rpc('admin_get', { p_id: q.id }).then(function (fresh) {
-          renderStats(fresh);
-          var meta = document.getElementById('detail-meta');
-          if (meta) meta.textContent = metaText(fresh);
-        }).catch(function () {});
+        rpc('admin_get', { p_id: q.id }).then(refreshHeader).catch(function () {});
       }).catch(function (e2) { genBtn.disabled = false; fail(e2); });
     } },
-      h('h2', { text: 'Genera nuovi link' }),
+      h('h3', { text: 'Genera nuovi link personali' }),
       h('div', { class: 'inline-form' },
         h('div', { class: 'field' }, h('label', { for: 'tok-count', text: 'Quanti link (uno per destinatario)' }), count),
         genBtn
@@ -469,7 +517,7 @@
 
     if (q.token_unused > 0) {
       panel.appendChild(h('div', { class: 'card danger-zone' },
-        h('h2', { text: 'Revoca link non usati' }),
+        h('h3', { text: 'Revoca link personali non usati' }),
         h('p', { class: 'muted', text: 'Invalida tutti i ' + q.token_unused + ' link non ancora utilizzati (es. se sono stati diffusi per errore). Le risposte già raccolte non vengono toccate.' }),
         h('button', { type: 'button', class: 'btn btn-danger', text: 'Revoca ' + plural(q.token_unused, 'link', 'link'), onclick: function () {
           if (!window.confirm('Revocare tutti i link non ancora usati? L\'operazione è irreversibile.')) return;
@@ -503,16 +551,17 @@
     ));
   }
 
-  function copy(text, fallbackEl) {
+  function copy(text, fallbackEl, okMsg) {
+    okMsg = okMsg || 'Link copiati negli appunti';
     if (navigator.clipboard && window.isSecureContext) {
-      navigator.clipboard.writeText(text).then(function () { toast('Link copiati negli appunti'); }, function () { manualCopy(fallbackEl); });
-    } else manualCopy(fallbackEl);
+      navigator.clipboard.writeText(text).then(function () { toast(okMsg); }, function () { manualCopy(fallbackEl, okMsg); });
+    } else manualCopy(fallbackEl, okMsg);
   }
-  function manualCopy(el) {
+  function manualCopy(el, okMsg) {
     el.focus(); el.select();
     var ok = false;
     try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
-    toast(ok ? 'Link copiati negli appunti' : 'Seleziona il testo e premi Ctrl+C per copiarlo', ok ? null : 'error');
+    toast(ok ? okMsg : 'Seleziona il testo e premi Ctrl+C per copiarlo', ok ? null : 'error');
   }
   function download(name, content, type) {
     var url = URL.createObjectURL(new Blob([content], { type: type }));

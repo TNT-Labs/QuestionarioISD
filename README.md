@@ -25,13 +25,16 @@ Browser ──► GitHub Pages (site/: HTML, CSS, JS, nessuna libreria esterna)
 - Crea, modifica, duplica ed elimina questionari.
 - Tre tipi di domanda: **risposta aperta**, **scelta singola**, **scelta multipla**. Per le domande chiuse si indicano le risposte possibili (minimo 2). Ogni domanda può essere obbligatoria o facoltativa e si può riordinare.
 - Stati: **Bozza** → **Raccolta aperta** → **Chiuso** (riapribile).
-- Genera N link monouso, da copiare o scaricare (`.csv`/`.txt`). Puoi revocare i link non ancora usati.
+- Due modi di distribuzione, utilizzabili anche insieme:
+  - **link personali monouso**: ne generi N, da copiare o scaricare (`.csv`/`.txt`); ognuno vale una sola compilazione. Puoi revocare quelli non ancora usati;
+  - **link pubblico unico**, uguale per tutti: si attiva, rigenera o disattiva in qualsiasi momento e non si consuma.
 - Risultati aggregati (conteggi e percentuali, elenco delle risposte aperte) ed export CSV.
 - Dopo la prima risposta le domande sono bloccate, per non alterare i dati: per una nuova versione usa **Duplica**.
 
-**Pagina di risposta** (`<sito>/#t=<codice>`)
-- Accessibile, adatta a smartphone e al tema scuro.
-- Se la risposta è incompleta il link non viene consumato.
+**Pagina di risposta** (`<sito>/#t=<codice>` per i link personali, `<sito>/#p=<codice>` per il link pubblico)
+- Accessibile, adatta a smartphone e al tema scuro, con contatore dei caratteri nelle risposte aperte.
+- Se la risposta è incompleta il link personale non viene consumato.
+- Con il link pubblico, dopo l'invio il browser ricorda (in `localStorage`, solo il valore "compilato" per quel link) di aver già risposto e non mostra di nuovo il modulo. È un deterrente, non una garanzia: un altro browser o la navigazione privata permettono di rispondere ancora. Il server non effettua alcun controllo.
 
 ## Anonimato
 
@@ -40,11 +43,13 @@ Browser ──► GitHub Pages (site/: HTML, CSS, JS, nessuna libreria esterna)
 | Nel database ogni link è salvato solo come **hash SHA-256** e viene **eliminato quando viene usato** | Nessuna traccia di quale link abbia risposto |
 | Le risposte hanno un **ID casuale**, **nessun timestamp** e nessun riferimento al link | Non si può collegare una risposta a un link o a una persona |
 | Il codice del link è nel **frammento `#` dell'URL** | Il browser non lo invia a GitHub Pages, quindi non finisce nei log del sito |
-| Nessun cookie, nessuno storage locale e nessuna risorsa di terze parti (font o CDN) per chi risponde; `no-referrer` | Nessun tracciamento |
+| Nessun cookie e nessuna risorsa di terze parti (font o CDN) per chi risponde; `no-referrer` | Nessun tracciamento |
+| Link pubblico: l'indicatore "già compilato" resta nel browser di chi risponde, non contiene identificativi e non viene mai inviato | Il blocco delle compilazioni ripetute non permette di riconoscere nessuno |
 | Risultati ed export in **ordine casuale** | L'ordine non rivela chi ha risposto per primo |
 
 Limiti intrinseci, da comunicare con trasparenza:
-- Chi distribuisce i link sa a chi ha dato ciascun link. Dal numero di link residui può quindi capire *se* qualcuno ha risposto, ma **non cosa** ha risposto.
+- Con il link pubblico non si sa nemmeno *chi* ha risposto; per contro chiunque abbia il link può rispondere più volte cambiando browser. Se serve la garanzia "una persona, una risposta", usa i link personali.
+- Chi distribuisce i link personali sa a chi ha dato ciascun link. Dal numero di link residui può quindi capire *se* qualcuno ha risposto, ma **non cosa** ha risposto.
 - Come ogni servizio web, Supabase registra nei propri log tecnici IP e orario delle chiamate API. Questi log non contengono il link né le risposte. Chi ha accesso amministrativo al progetto Supabase e incrocia log e dati interni del database (ad es. l'ordine di scrittura) potrebbe ridurre l'anonimato: limita l'accesso al progetto Supabase alle persone strettamente necessarie.
 - Con pochissimi partecipanti, le risposte possono essere riconoscibili dal loro contenuto.
 
@@ -52,7 +57,9 @@ Limiti intrinseci, da comunicare con trasparenza:
 
 ### 1. Supabase
 1. Crea un progetto su [supabase.com](https://supabase.com) (regione UE consigliata).
-2. **SQL Editor** → incolla ed esegui tutto `supabase/schema.sql`. Lo script si può rieseguire per gli aggiornamenti.
+2. **SQL Editor** → incolla ed esegui tutto `supabase/schema.sql`. Lo script si può rieseguire per gli aggiornamenti: conserva i dati esistenti.
+
+   > **Aggiornamenti:** quando una nuova versione modifica `supabase/schema.sql`, riesegui lo script **prima** di pubblicare il sito aggiornato.
 3. **Authentication → Sign In / Providers**: disattiva *Allow new users to sign up*.
 4. **Authentication → Users → Add user**: crea l'amministratore (email e password).
 5. Abilitalo come amministratore dal SQL Editor:
@@ -98,7 +105,7 @@ Il comando avvia `http://127.0.0.1:8787` con un emulatore di Supabase: un vero P
 npm test
 ```
 
-I test eseguono lo schema SQL su PostgreSQL e coprono: permessi (anon, utente non admin, admin), link monouso, stati del questionario, validazione di domande e risposte (inclusi input manipolati), blocco delle domande dopo la prima risposta, struttura anonima del database, export, revoca, duplicazione ed eliminazione.
+I test eseguono lo schema SQL su PostgreSQL e coprono: permessi (anon, utente non admin, admin), link monouso, stati del questionario, validazione di domande e risposte (inclusi input manipolati), blocco delle domande dopo la prima risposta, struttura anonima del database, export, revoca, duplicazione ed eliminazione, link pubblico (attivazione, risposte multiple, rigenerazione, disattivazione, coesistenza con i link personali).
 
 ## Struttura
 

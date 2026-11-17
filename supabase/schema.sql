@@ -26,6 +26,12 @@ create table if not exists public.questionnaires (
   created_at  timestamptz not null default now()
 );
 
+-- Link pubblico (unico per tutti). NULL = disattivato. Il valore è pubblico per
+-- natura (viene condiviso) e non è collegato in alcun modo alle risposte.
+alter table public.questionnaires add column if not exists public_slug text;
+create unique index if not exists questionnaires_public_slug_idx
+  on public.questionnaires(public_slug) where public_slug is not null;
+
 create table if not exists public.questions (
   id               bigint generated always as identity primary key,
   questionnaire_id bigint not null references public.questionnaires(id) on delete cascade,
@@ -157,18 +163,17 @@ begin
 end $$;
 
 /**
- * Valida e registra una risposta consumando il link, in un'unica transazione.
+ * Valida le risposte rispetto alle domande del questionario e, se valide, le salva
+ * come nuova risposta anonima. Uso interno: il chiamante deve aver già verificato
+ * che il questionario sia aperto e (per i link personali) aver bloccato il link.
  * p_answers: { "<questionId>": "testo" | [optionId, ...] }
- * Ritorna { status: ok | invalid | draft | closed | errors, errors?: { "<questionId>": "messaggio" } }
+ * Ritorna { status: ok } oppure { status: errors, errors: { "<questionId>": "messaggio" } }.
  */
-create or replace function public.submit_response(p_token text, p_answers jsonb)
+create or replace function public._store_answers(p_qid bigint, p_answers jsonb)
 returns jsonb language plpgsql volatile security definer
 set search_path = public, pg_catalog
 as $$
 declare
-  v_hash   text;
-  v_qid    bigint;
-  v_status text;
   v_q      record;
   v_val    jsonb;
   v_text   text;
@@ -179,25 +184,11 @@ declare
   v_texts  jsonb := '[]'::jsonb;
   v_choice jsonb := '[]'::jsonb;
 begin
-  if p_token is null or p_token !~ '^[A-Za-z0-9_-]{16,64}$' then
-    return jsonb_build_object('status', 'invalid');
-  end if;
   if p_answers is null or jsonb_typeof(p_answers) <> 'object' then
     p_answers := '{}'::jsonb;
   end if;
-  v_hash := public._hash_token(p_token);
 
-  -- Blocca la riga del link: invii concorrenti con lo stesso link si serializzano qui.
-  select t.questionnaire_id into v_qid from public.tokens t where t.token_hash = v_hash for update;
-  if not found then
-    return jsonb_build_object('status', 'invalid');
-  end if;
-  select status into v_status from public.questionnaires where id = v_qid for share;
-  if v_status <> 'open' then
-    return jsonb_build_object('status', v_status);
-  end if;
-
-  for v_q in select id, type, required from public.questions where questionnaire_id = v_qid order by position loop
+  for v_q in select id, type, required from public.questions where questionnaire_id = p_qid order by position loop
     v_val := p_answers -> v_q.id::text;
 
     if v_q.type = 'open' then
@@ -239,19 +230,112 @@ begin
   end loop;
 
   if v_errors <> '{}'::jsonb then
-    -- Il link NON viene consumato: la transazione termina senza modifiche.
     return jsonb_build_object('status', 'errors', 'errors', v_errors);
   end if;
 
-  -- Consumo del link e salvataggio: atomici (stessa transazione della funzione).
-  delete from public.tokens where token_hash = v_hash;
-  insert into public.responses (questionnaire_id) values (v_qid) returning id into v_rid;
+  -- Nessun timestamp e nessun riferimento al link: ID casuale.
+  insert into public.responses (questionnaire_id) values (p_qid) returning id into v_rid;
   insert into public.answers_text (response_id, question_id, value)
     select v_rid, (e->>'q')::bigint, e->>'v' from jsonb_array_elements(v_texts) e;
   insert into public.answers_choice (response_id, question_id, option_id)
     select v_rid, (e->>'q')::bigint, (e->>'o')::bigint from jsonb_array_elements(v_choice) e;
 
   return jsonb_build_object('status', 'ok');
+end $$;
+
+/**
+ * Link personale monouso: valida, registra la risposta e consuma il link
+ * in un'unica transazione.
+ * Ritorna { status: ok | invalid | draft | closed | errors, errors? }
+ */
+create or replace function public.submit_response(p_token text, p_answers jsonb)
+returns jsonb language plpgsql volatile security definer
+set search_path = public, pg_catalog
+as $$
+declare
+  v_hash   text;
+  v_qid    bigint;
+  v_status text;
+  v_res    jsonb;
+begin
+  if p_token is null or p_token !~ '^[A-Za-z0-9_-]{16,64}$' then
+    return jsonb_build_object('status', 'invalid');
+  end if;
+  v_hash := public._hash_token(p_token);
+
+  -- Blocca la riga del link: invii concorrenti con lo stesso link si serializzano qui.
+  select t.questionnaire_id into v_qid from public.tokens t where t.token_hash = v_hash for update;
+  if not found then
+    return jsonb_build_object('status', 'invalid');
+  end if;
+  select status into v_status from public.questionnaires where id = v_qid for share;
+  if v_status <> 'open' then
+    return jsonb_build_object('status', v_status);
+  end if;
+
+  v_res := public._store_answers(v_qid, p_answers);
+  if v_res->>'status' = 'ok' then
+    -- Consumo del link nella stessa transazione del salvataggio.
+    -- In caso di errori di validazione il link NON viene consumato.
+    delete from public.tokens where token_hash = v_hash;
+  end if;
+  return v_res;
+end $$;
+
+/**
+ * Link pubblico (unico per tutti): restituisce il questionario.
+ * Il link non viene consumato né associato in alcun modo alle risposte.
+ * status: ok | invalid (link inesistente, disattivato o rigenerato) | draft | closed
+ */
+create or replace function public.get_public_survey(p_slug text)
+returns jsonb language plpgsql stable security definer
+set search_path = public, pg_catalog
+as $$
+declare
+  v_q public.questionnaires;
+begin
+  if p_slug is null or p_slug !~ '^[A-Za-z0-9_-]{16,64}$' then
+    return jsonb_build_object('status', 'invalid');
+  end if;
+  select * into v_q from public.questionnaires where public_slug = p_slug;
+  if not found then
+    return jsonb_build_object('status', 'invalid');
+  end if;
+  if v_q.status <> 'open' then
+    return jsonb_build_object('status', v_q.status);
+  end if;
+  return jsonb_build_object(
+    'status', 'ok',
+    'questionnaire', jsonb_build_object(
+      'title', v_q.title, 'description', v_q.description,
+      'questions', public._questions_json(v_q.id)));
+end $$;
+
+/**
+ * Link pubblico: valida e registra una risposta anonima. Nessun controllo su chi
+ * risponde (l'eventuale blocco di una seconda compilazione è solo nel browser).
+ * Ritorna { status: ok | invalid | draft | closed | errors, errors? }
+ */
+create or replace function public.submit_public_response(p_slug text, p_answers jsonb)
+returns jsonb language plpgsql volatile security definer
+set search_path = public, pg_catalog
+as $$
+declare
+  v_qid    bigint;
+  v_status text;
+begin
+  if p_slug is null or p_slug !~ '^[A-Za-z0-9_-]{16,64}$' then
+    return jsonb_build_object('status', 'invalid');
+  end if;
+  -- Lock condiviso: impedisce che stato o domande cambino durante il salvataggio.
+  select id, status into v_qid, v_status from public.questionnaires where public_slug = p_slug for share;
+  if not found then
+    return jsonb_build_object('status', 'invalid');
+  end if;
+  if v_status <> 'open' then
+    return jsonb_build_object('status', v_status);
+  end if;
+  return public._store_answers(v_qid, p_answers);
 end $$;
 
 -- ========================================================= amministrazione
@@ -270,6 +354,7 @@ begin
   return coalesce((
     select jsonb_agg(jsonb_build_object(
       'id', q.id, 'title', q.title, 'status', q.status, 'created_at', q.created_at,
+      'public_slug', q.public_slug,
       'question_count', (select count(*) from public.questions  where questionnaire_id = q.id),
       'token_unused',   (select count(*) from public.tokens     where questionnaire_id = q.id),
       'response_count', (select count(*) from public.responses  where questionnaire_id = q.id)
@@ -288,6 +373,7 @@ begin
   if not found then raise exception 'Questionario non trovato.' using errcode = 'P0002'; end if;
   return jsonb_build_object(
     'id', v_q.id, 'title', v_q.title, 'description', v_q.description, 'status', v_q.status,
+    'public_slug', v_q.public_slug,
     'questions', public._questions_json(v_q.id),
     'token_unused',   (select count(*) from public.tokens    where questionnaire_id = v_q.id),
     'response_count', (select count(*) from public.responses where questionnaire_id = v_q.id));
@@ -458,6 +544,32 @@ begin
   return v_tokens;
 end $$;
 
+/**
+ * Gestione del link pubblico: p_action = enable | disable | regenerate.
+ * enable mantiene il link esistente (se c'è); regenerate lo sostituisce
+ * (il vecchio smette di funzionare); disable lo elimina.
+ */
+create or replace function public.admin_public_link(p_id bigint, p_action text)
+returns jsonb language plpgsql volatile security definer
+set search_path = public, pg_catalog
+as $$
+begin
+  perform public._require_admin();
+  if p_action is null or p_action not in ('enable', 'disable', 'regenerate') then
+    raise exception 'Azione non valida.' using errcode = '22023';
+  end if;
+  perform 1 from public.questionnaires where id = p_id for update;
+  if not found then raise exception 'Questionario non trovato.' using errcode = 'P0002'; end if;
+  update public.questionnaires
+     set public_slug = case p_action
+           when 'disable'    then null
+           when 'regenerate' then replace(gen_random_uuid()::text, '-', '')
+           else coalesce(public_slug, replace(gen_random_uuid()::text, '-', ''))
+         end
+   where id = p_id;
+  return public.admin_get(p_id);
+end $$;
+
 create or replace function public.admin_revoke_tokens(p_id bigint)
 returns int language plpgsql volatile security definer
 set search_path = public, pg_catalog
@@ -537,10 +649,11 @@ begin
     select p.oid::regprocedure as sig, p.proname
       from pg_proc p join pg_namespace n on n.oid = p.pronamespace
      where n.nspname = 'public'
-       and (p.proname like '\_%' or p.proname like 'admin\_%' or p.proname in ('get_survey','submit_response'))
+       and (p.proname like '\_%' or p.proname like 'admin\_%'
+            or p.proname in ('get_survey', 'submit_response', 'get_public_survey', 'submit_public_response'))
   loop
     execute format('revoke all on function %s from public, anon, authenticated', f.sig);
-    if f.proname in ('get_survey', 'submit_response') then
+    if f.proname in ('get_survey', 'submit_response', 'get_public_survey', 'submit_public_response') then
       execute format('grant execute on function %s to anon, authenticated', f.sig);
     elsif f.proname like 'admin\_%' then
       execute format('grant execute on function %s to authenticated', f.sig);

@@ -33,7 +33,7 @@ $$;
 // Tipi dei parametri delle funzioni RPC (PostgREST li ricava dal catalogo).
 const ARG_TYPES = {
   p_token: 'text', p_answers: 'jsonb', p_id: 'bigint', p_title: 'text', p_description: 'text',
-  p_questions: 'jsonb', p_status: 'text', p_count: 'int',
+  p_questions: 'jsonb', p_status: 'text', p_count: 'int', p_slug: 'text', p_action: 'text',
 };
 
 async function createDb() {
