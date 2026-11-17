@@ -1,17 +1,48 @@
 'use strict';
 /*
- * Pagina di compilazione. Il link personale è nel frammento dell'URL (#t=...):
- * il frammento non viene mai inviato a GitHub Pages, quindi non compare nei log
- * del server che ospita il sito. Nessun cookie né storage locale.
+ * Pagina di compilazione. Due tipi di link, sempre nel frammento dell'URL
+ * (il frammento non viene mai inviato a GitHub Pages, quindi non compare nei log
+ * del server che ospita il sito):
+ *   #t=<codice>  link personale monouso (controllato e consumato dal database)
+ *   #p=<codice>  link pubblico unico per tutti (nessun controllo lato server)
+ * Per il link pubblico, dopo l'invio il browser salva in localStorage solo
+ * l'indicazione "questionario già compilato", per impedire una seconda
+ * compilazione dallo stesso browser. Il dato non lascia mai il dispositivo
+ * (a differenza di un cookie, che verrebbe inviato a ogni richiesta) e non
+ * contiene alcun identificativo. Nessun cookie.
  */
 (function () {
   var h = QISD.h;
   var app = document.getElementById('app');
   var MAX_TEXT = 5000;
 
-  function tokenFromHash() {
-    var m = location.hash.match(/^#(?:t=)?([A-Za-z0-9_-]{16,64})$/);
-    return m ? m[1] : null;
+  /**
+   * Legge il link dal frammento: { mode: 'token' | 'public', code }, { invalid: true }
+   * se il frammento è presente ma non riconoscibile, oppure null se manca.
+   * Tollera le alterazioni tipiche di email e chat: caratteri codificati (%3D)
+   * e punteggiatura aggiunta in coda (es. "…#t=abc." o "…#t=abc)").
+   */
+  function linkFromHash() {
+    var raw = location.hash.replace(/^#/, '');
+    if (!raw) return null;
+    try { raw = decodeURIComponent(raw); } catch (e) { /* lascia il valore com'è */ }
+    var m = raw.match(/^\s*(?:([tp])\s*=\s*)?([A-Za-z0-9_-]{16,64})(?![A-Za-z0-9_-])/);
+    if (!m) return { invalid: true };
+    return { mode: m[1] === 'p' ? 'public' : 'token', code: m[2] };
+  }
+
+  // Indicatore locale "già compilato" (solo link pubblico). Lettura/scrittura protette:
+  // in navigazione privata o con storage bloccato la pagina funziona comunque.
+  var DONE_PREFIX = 'qisd_compilato_';
+  function alreadyDone(code) {
+    try { return localStorage.getItem(DONE_PREFIX + code) === '1'; } catch (e) { return false; }
+  }
+  function markDone(code) {
+    try { localStorage.setItem(DONE_PREFIX + code, '1'); } catch (e) { /* storage non disponibile */ }
+  }
+  function alreadyDoneMessage() {
+    message('Hai già compilato questo questionario',
+      'Da questo browser risulta già inviata una risposta. Grazie per la partecipazione!', 'info');
   }
 
   function message(title, text, kind) {
@@ -23,7 +54,11 @@
     sec.querySelector('h1').focus();
   }
 
-  function statusMessage(status) {
+  function statusMessage(status, mode) {
+    if (status === 'invalid' && mode === 'public') {
+      return message('Link non valido o non più attivo',
+        'Il link potrebbe essere stato disattivato. Verifica di averlo copiato per intero.', 'error');
+    }
     if (status === 'invalid') {
       return message('Link non valido o già utilizzato',
         'Ogni link consente una sola compilazione. Se hai già risposto, grazie per la partecipazione! ' +
@@ -46,18 +81,25 @@
   }
 
   function load() {
-    var token = tokenFromHash();
-    if (!token) return message('Questionario', 'Per partecipare apri il link personale che hai ricevuto.');
+    var link = linkFromHash();
+    if (!link) return message('Questionario', 'Per partecipare apri il link che hai ricevuto.');
+    if (link.invalid) {
+      return message('Link non valido', 'Il link sembra incompleto o modificato. Verifica di averlo copiato per intero.', 'error');
+    }
     if (!QISD.configured()) return message('Configurazione mancante', 'Il servizio non è ancora configurato.', 'error');
-    QISD.rpc('get_survey', { p_token: token }).then(function (res) {
-      if (!res || res.status !== 'ok') return statusMessage(res && res.status);
-      render(token, res.questionnaire);
+    if (link.mode === 'public' && alreadyDone(link.code)) return alreadyDoneMessage();
+    var fn = link.mode === 'public' ? 'get_public_survey' : 'get_survey';
+    var args = link.mode === 'public' ? { p_slug: link.code } : { p_token: link.code };
+    QISD.rpc(fn, args).then(function (res) {
+      if (!res || res.status !== 'ok') return statusMessage(res && res.status, link.mode);
+      render(link, res.questionnaire);
     }).catch(function (e) {
       message('Errore', e.message, 'error');
     });
   }
 
-  function render(token, q) {
+  function render(link, q) {
+    var isPublic = link.mode === 'public';
     document.title = q.title;
     QISD.clear(app);
     var hasRequired = q.questions.some(function (x) { return x.required; });
@@ -65,7 +107,11 @@
     app.appendChild(h('header', { class: 'card intro' },
       h('h1', { text: q.title }),
       paragraphs(q.description),
-      h('p', { class: 'privacy', text: 'Il questionario è anonimo: le risposte non vengono associate al link ricevuto né a dati che possano identificarti. Il link è personale e può essere usato una sola volta.' }),
+      h('p', { class: 'privacy', text: isPublic
+        ? 'Il questionario è anonimo: le risposte non vengono associate a dati che possano identificarti. ' +
+          'Per evitare compilazioni ripetute, dopo l\'invio questo browser ricorderà soltanto che il questionario è già stato compilato: ' +
+          'l\'informazione resta sul tuo dispositivo e non viene mai inviata.'
+        : 'Il questionario è anonimo: le risposte non vengono associate al link ricevuto né a dati che possano identificarti. Il link è personale e può essere usato una sola volta.' }),
       hasRequired ? h('p', { class: 'legend-req' }, h('span', { class: 'req', text: '*' }), ' domanda obbligatoria') : null
     ));
 
@@ -99,21 +145,30 @@
         } else answers[qq.id] = v;
       });
       if (showErrors(errors)) return;
+      // Compilato nel frattempo da un'altra scheda dello stesso browser
+      if (isPublic && alreadyDone(link.code)) return alreadyDoneMessage();
 
       sending = true;
       btn.disabled = true;
       btn.textContent = 'Invio in corso…';
-      QISD.rpc('submit_response', { p_token: token, p_answers: answers }).then(function (res) {
+      var call = isPublic
+        ? QISD.rpc('submit_public_response', { p_slug: link.code, p_answers: answers })
+        : QISD.rpc('submit_response', { p_token: link.code, p_answers: answers });
+      call.then(function (res) {
         if (res && res.status === 'ok') {
-          // Rimuove il link dalla barra degli indirizzi: non serve più.
-          try { history.replaceState(null, '', location.pathname + location.search); } catch (err) { /* ignora */ }
+          if (isPublic) {
+            markDone(link.code);
+          } else {
+            // Link personale consumato: lo rimuove dalla barra degli indirizzi.
+            try { history.replaceState(null, '', location.pathname + location.search); } catch (err) { /* ignora */ }
+          }
           document.title = 'Grazie!';
           return message('Grazie!', 'Le tue risposte sono state registrate in forma anonima. Puoi chiudere questa pagina.', 'success');
         }
         if (res && res.status === 'errors') {
           showErrors(res.errors || {});
         } else {
-          return statusMessage(res && res.status);
+          return statusMessage(res && res.status, link.mode);
         }
         reset();
       }).catch(function (err) {

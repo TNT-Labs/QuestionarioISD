@@ -24,7 +24,8 @@ end $$;
 create schema if not exists auth;
 grant usage on schema auth to anon, authenticated;
 grant usage on schema public to anon, authenticated;
-create table if not exists auth.users (id uuid primary key, email text unique not null, password text not null);
+create table if not exists auth.users (id uuid primary key, email text unique not null, password text not null,
+  confirmed boolean not null default true);
 create or replace function auth.uid() returns uuid language sql stable as $$
   select nullif(current_setting('request.jwt.claim.sub', true), '')::uuid
 $$;
@@ -33,7 +34,7 @@ $$;
 // Tipi dei parametri delle funzioni RPC (PostgREST li ricava dal catalogo).
 const ARG_TYPES = {
   p_token: 'text', p_answers: 'jsonb', p_id: 'bigint', p_title: 'text', p_description: 'text',
-  p_questions: 'jsonb', p_status: 'text', p_count: 'int',
+  p_questions: 'jsonb', p_status: 'text', p_count: 'int', p_slug: 'text', p_action: 'text',
 };
 
 async function createDb() {
@@ -68,15 +69,15 @@ async function createDb() {
     return p;
   }
 
-  async function addUser(email, password, { admin = false } = {}) {
+  async function addUser(email, password, { admin = false, confirmed = true } = {}) {
     const id = crypto.randomUUID();
-    await db.query('insert into auth.users (id, email, password) values ($1, $2, $3)', [id, email, password]);
+    await db.query('insert into auth.users (id, email, password, confirmed) values ($1, $2, $3, $4)', [id, email, password, confirmed]);
     if (admin) await db.query('insert into public.admins (user_id) values ($1)', [id]);
     return id;
   }
 
   async function findUser(email, password) {
-    const r = await db.query('select id, email from auth.users where email = $1 and password = $2', [email, password]);
+    const r = await db.query('select id, email, confirmed from auth.users where email = $1 and password = $2', [email, password]);
     return r.rows[0] || null;
   }
 
@@ -88,8 +89,11 @@ function pgError(e) {
   const code = e.code || '';
   let status = e.status || 400;
   if (code === '42501') status = 403;
-  else if (code === '42883') status = 404;
   else if (code === 'P0002') status = 404;
+  else if (code === '42883') {
+    // Come PostgREST: funzione inesistente nella cache dello schema
+    return { status: 404, body: { code: 'PGRST202', message: `Could not find the function ${e.message}`, details: null, hint: null } };
+  }
   return { status, body: { code, message: e.message, details: null, hint: null } };
 }
 
@@ -135,8 +139,10 @@ async function createServer({ port = 8787, apiKey = 'local-dev-key' } = {}) {
         if (url.pathname === '/auth/v1/token') {
           const grant = url.searchParams.get('grant_type');
           if (grant === 'password') {
+            // Stesso formato di errore di Supabase Auth
             const user = await store.findUser(body.email, body.password);
-            if (!user) return send(400, { error: 'invalid_grant', error_description: 'Invalid login credentials' });
+            if (!user) return send(400, { code: 400, error_code: 'invalid_credentials', msg: 'Invalid login credentials' });
+            if (!user.confirmed) return send(400, { code: 400, error_code: 'email_not_confirmed', msg: 'Email not confirmed' });
             return send(200, issue(user));
           }
           if (grant === 'refresh_token') {

@@ -12,9 +12,10 @@
 
   function configured() { return !!(baseUrl && key); }
 
-  function ApiError(message, status) {
+  function ApiError(message, status, code) {
     var e = new Error(message);
     e.status = status;
+    e.code = code || null;
     return e;
   }
 
@@ -34,8 +35,11 @@
         var data = null;
         if (txt) { try { data = JSON.parse(txt); } catch (e) { data = txt; } }
         if (!res.ok) {
+          var code = data && typeof data === 'object' ? (data.error_code || data.code || data.error || null) : null;
           var msg = (data && (data.message || data.msg || data.error_description || data.error)) || ('Errore ' + res.status);
-          throw ApiError(String(msg), res.status);
+          // Funzione non presente nel database: lo schema SQL non è stato aggiornato.
+          if (code === 'PGRST202') msg = 'Il servizio non è aggiornato: l\'amministratore deve rieseguire supabase/schema.sql su Supabase.';
+          throw ApiError(String(msg), res.status, code);
         }
         return data;
       });
@@ -96,7 +100,11 @@
       return request('/auth/v1/token?grant_type=password', { body: { email: email, password: password } })
         .then(function (d) { saveSession(fromAuthResponse(d)); return session; })
         .catch(function (e) {
-          if (e.status === 400 || e.status === 401) throw ApiError('Email o password non corretti.', 401);
+          if (e.code === 'email_not_confirmed') {
+            throw ApiError('Email non confermata: conferma l\'utente in Supabase (Authentication → Users).', 401, e.code);
+          }
+          if (e.status === 429) throw ApiError('Troppi tentativi di accesso: attendi qualche minuto e riprova.', 429, e.code);
+          if (e.status === 400 || e.status === 401) throw ApiError('Email o password non corretti.', 401, e.code);
           throw e;
         });
     },
