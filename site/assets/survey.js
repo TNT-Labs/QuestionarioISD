@@ -12,6 +12,7 @@
  * contiene alcun identificativo. Nessun cookie.
  */
 (function () {
+  if (!window.QISD) return; // pagina incorporata in un frame esterno: non si avvia (vedi api.js)
   var h = QISD.h;
   var app = document.getElementById('app');
   var MAX_TEXT = 5000;

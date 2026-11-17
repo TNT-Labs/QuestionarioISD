@@ -1,6 +1,7 @@
 'use strict';
 
 (function () {
+  if (!window.QISD) return; // pagina incorporata in un frame esterno: non si avvia (vedi api.js)
   var h = QISD.h;
   var clear = QISD.clear;
   var app = document.getElementById('app');

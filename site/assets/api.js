@@ -5,6 +5,18 @@
  * Configurazione in config.js: window.QISD_CONFIG = { supabaseUrl, supabaseKey }.
  */
 (function () {
+  // Protezione dal clickjacking. GitHub Pages non permette di inviare l'header
+  // X-Frame-Options né la direttiva CSP frame-ancestors (non valida nel meta tag):
+  // se la pagina è incorporata in un frame di un altro sito, si nasconde, non
+  // inizializza l'app (QISD resta indefinito) e prova a portarsi in primo piano.
+  var framed;
+  try { framed = window.self !== window.top; } catch (e) { framed = true; }
+  if (framed) {
+    document.documentElement.style.display = 'none';
+    try { window.top.location.href = window.self.location.href; } catch (e) { /* frame con sandbox */ }
+    return;
+  }
+
   var cfg = window.QISD_CONFIG || {};
   var baseUrl = String(cfg.supabaseUrl || '').replace(/\/+$/, '');
   var key = String(cfg.supabaseKey || '');
