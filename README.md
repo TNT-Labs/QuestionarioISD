@@ -53,6 +53,33 @@ Limiti intrinseci, da comunicare con trasparenza:
 - Come ogni servizio web, Supabase registra nei propri log tecnici IP e orario delle chiamate API. Questi log non contengono il link né le risposte. Chi ha accesso amministrativo al progetto Supabase e incrocia log e dati interni del database (ad es. l'ordine di scrittura) potrebbe ridurre l'anonimato: limita l'accesso al progetto Supabase alle persone strettamente necessarie.
 - Con pochissimi partecipanti, le risposte possono essere riconoscibili dal loro contenuto.
 
+## Sicurezza
+
+**Protezioni nel codice**
+- Le tabelle non sono raggiungibili dall'API: solo funzioni che validano ogni input. Le funzioni di gestione verificano che l'utente sia in `admins`, quindi un utente registrato qualsiasi non può fare nulla.
+- I link personali sono salvati solo come hash e i codici hanno 122 bit casuali: non si possono indovinare.
+- Il sito non usa librerie esterne, ha una CSP restrittiva e inserisce sempre i testi come testo, mai come HTML: nessuna iniezione di script.
+- I CSV esportati sono protetti dalle formule malevole.
+- Il sito non si avvia se incorporato in un frame di un altro sito (protezione dal clickjacking, necessaria perché GitHub Pages non consente l'header `X-Frame-Options`).
+- Nel repository non ci sono segreti: la chiave in `config.js` è quella pubblica (publishable/anon).
+
+**Impostazioni da verificare (non controllabili dal codice)**
+| Dove | Impostazione |
+|---|---|
+| Supabase → Authentication → Sign In / Providers | *Allow new users to sign up* **disattivato**; *Anonymous sign-ins* **disattivato** |
+| Supabase → Authentication → Passwords | Lunghezza minima ≥ 12; se disponibile, *Leaked password protection* attivo |
+| Supabase → Project Settings → General | Regione **UE** (dati in Europa, GDPR) |
+| Supabase → Organization → Team | Solo le persone indispensabili: chi amministra il progetto vede dati e log tecnici |
+| Account Supabase e GitHub | **Autenticazione a due fattori** per tutti i membri: chi controlla il repository può modificare il codice del sito |
+| GitHub → Settings → Branches | Protezione del branch `main` (modifiche solo tramite pull request) |
+| GitHub → Settings → Pages | *Enforce HTTPS* attivo |
+| Mai | Non usare né pubblicare la chiave **secret / service_role** |
+
+**Buone pratiche**
+- I file `.csv`/`.txt` dei link personali sono "chiavi" valide finché non vengono usate: conservali con cura ed eliminali dopo l'invio.
+- A raccolta conclusa esporta i risultati ed elimina il questionario, se non serve più.
+- Nell'informativa ai partecipanti cita che GitHub (hosting del sito) e Supabase (database) registrano, nei propri log tecnici, l'indirizzo IP delle richieste. L'applicazione non li registra e non li associa alle risposte.
+
 ## Messa in produzione
 
 ### 1. Supabase
